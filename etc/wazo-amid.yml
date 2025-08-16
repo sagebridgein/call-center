@@ -1,0 +1,20 @@
+debug: true
+rest_api:
+  listen: 0.0.0.0
+
+ami:
+  host: asterisk
+  username: wazo_amid
+  password: eeCho8ied3u
+
+ajam:
+  host: asterisk
+  port: 5038
+  username: wazo_amid
+  password: eeCho8ied3u
+
+bus:
+  host: rabbitmq
+
+auth:
+  host: auth

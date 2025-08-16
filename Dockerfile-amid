@@ -1,0 +1,8 @@
+FROM ajaysehwal81/wazo-amid
+
+# Add AJAM server
+COPY bin/ajam-server.py /usr/local/bin/ajam-server.py
+RUN chmod +x /usr/local/bin/ajam-server.py
+
+# Install Python if not already available
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+timeout=${INIT_TIMEOUT:-60}
+
+function wait_for_service () {
+  host=$1
+  port=$2
+  seconds=0
+  while [ "$seconds" -lt "$timeout" ]
+  do
+    # Try to connect using bash built-in /dev/tcp
+    if timeout 1 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
+      break
+    fi
+    seconds=$((seconds+1))
+    sleep 1
+  done
+
+  if [ "$seconds" -ge "$timeout" ]; then
+    echo "Timeout waiting for $host:$port"
+    exit 1
+  fi
+
+  sleep 2  # Try to fill delay between port is open and initialization is complete
+}
+
+
+function wait_for_file(){
+  key_file=$1
+  seconds=0
+  while [ "$seconds" -lt "$timeout" ] && [ ! -f $key_file ]
+  do
+    seconds=$((seconds+1))
+    sleep 1
+  done
+
+  if [ "$seconds" -ge "$timeout" ]; then
+    exit 1
+  fi
+}

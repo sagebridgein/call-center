@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Simple AJAM handler for amid compatibility
+# This script handles AJAM requests and returns appropriate responses
+
+case "$1" in
+    "ping")
+        echo "Response: Success"
+        echo "Message: Pong"
+        ;;
+    "login")
+        echo "Response: Success"
+        echo "Message: Authentication accepted"
+        ;;
+    "logoff")
+        echo "Response: Success"
+        echo "Message: Logged off"
+        ;;
+    *)
+        echo "Response: Error"
+        echo "Message: Unknown action"
+        ;;
+esac
