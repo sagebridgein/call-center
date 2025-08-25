@@ -31,26 +31,11 @@ def build(parsed_args):
 
 
 def load_services(parsed_args):
-    services_path = parsed_args.config
-    if not services_path:
-        return {}
-
-    # If the user provided a full path to a config file (bind-mounted),
-    # accept it and compute the extra config dir from its parent.
-    if os.path.isfile(services_path):
-        services_config = {
-            'config_file': services_path,
-            'extra_config_files': os.path.join(
-                os.path.dirname(services_path), SERVICES_EXTRA_CONFIG
-            ),
-        }
-    else:
-        # Original behavior: services_path is a directory containing config.yml and conf.d
-        services_config = {
-            'config_file': os.path.join(services_path, SERVICES_CONFIG_FILE),
-            'extra_config_files': os.path.join(services_path, SERVICES_EXTRA_CONFIG),
-        }
-
+    services_dir = parsed_args.config
+    services_config = {
+        'config_file': os.path.join(services_dir, SERVICES_CONFIG_FILE),
+        'extra_config_files': os.path.join(services_dir, SERVICES_EXTRA_CONFIG),
+    }
     services = read_config_file_hierarchy_accumulating_list(services_config)
     services.pop('config_file', None)
     services.pop('extra_config_files', None)
