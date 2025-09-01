@@ -2,8 +2,8 @@ services:
   nginx:
     image: nginx
     ports:
-      - "127.0.0.1:8443:443"
-      - "[::1]:8443:443"
+      - "0.0.0.0:8443:443"
+      - "[::]:8443:443"
     env_file:
       - variables.env
     volumes:
@@ -166,6 +166,8 @@ services:
       - asterisk-autoprov:/etc/asterisk/pjsip.d:rw
       - asterisk-doc:/usr/share/asterisk/documentation:rw
       - asterisk-voicemail:/var/spool/asterisk/voicemail:rw
+      - ./etc/asterisk-pjsip.conf:/etc/asterisk/pjsip.conf:ro
+      - ./etc/asterisk-pjsip-00-transport.conf:/etc/asterisk/pjsip.d/00-transport.conf:ro
       # xivo-config has too much dependencies to be installed in the container
       - type: bind
         source: ./xivo-config/etc/xivo/asterisk
@@ -179,7 +181,7 @@ services:
     command: ["sh", "-c", "python3 /usr/local/bin/ajam-server.py & asterisk -fTvvv"]
 
   confgend:
-    image: wazoplatform/wazo-confgend
+    image: ajaysehwal81/wazo-confgend
     env_file:
       - variables.env
     expose:
@@ -349,6 +351,7 @@ services:
       dockerfile: Dockerfile-bootstrap
     env_file:
       - variables.env
+    restart: unless-stopped
     volumes:
       - ./bin/init-bootstrap:/bin/platform-bootstrap/init:ro
       - ./etc/wazo-auth-cli.yml:/etc/wazo-auth-cli/conf.d/config.yml:ro
