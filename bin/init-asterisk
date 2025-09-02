@@ -31,4 +31,50 @@ wait_for_service $confgend_host $confgend_port
 
 wazo-confgen asterisk/modules.conf > /etc/asterisk/modules.conf
 
+# Create a default PJSIP user if none exists to simplify local testing.
+# This writes into the runtime pjsip.d directory (which is a docker volume
+# mounted at /etc/asterisk/pjsip.d). If another provisioning system
+# already created users, this will not overwrite them.
+DEFAULT_PJSIP_CONF="/etc/asterisk/pjsip.d/05-default-user.conf"
+if [ ! -f "$DEFAULT_PJSIP_CONF" ]; then
+	cat > "$DEFAULT_PJSIP_CONF" <<'PJSIPCONF'
+; Default test SIP user for local testing
+[uno_auth]
+type=auth
+auth_type=userpass
+password=uno1234
+username=uno
+
+[uno_aor]
+type=aor
+max_contacts=1
+
+[uno_endpoint]
+type=endpoint
+transport=transport-udp-local
+context=from-internal
+disallow=all
+allow=ulaw,alaw
+auth=uno_auth
+aors=uno_aor
+direct_media=no
+
+[uno_identify]
+type=identify
+endpoint=uno_endpoint
+match=0.0.0.0/0
+PJSIPCONF
+	chown asterisk:www-data "$DEFAULT_PJSIP_CONF" || true
+	chmod 660 "$DEFAULT_PJSIP_CONF" || true
+	echo "Wrote default PJSIP user to $DEFAULT_PJSIP_CONF"
+fi
+
+# If the pjsip.d file already exists but references old transport name, fix it.
+if [ -f "$DEFAULT_PJSIP_CONF" ]; then
+	if grep -q "transport=transport-udp" "$DEFAULT_PJSIP_CONF"; then
+		sed -i 's/transport=transport-udp/transport=transport-udp-local/g' "$DEFAULT_PJSIP_CONF" || true
+		echo "Patched existing $DEFAULT_PJSIP_CONF to use transport-udp-local"
+	fi
+fi
+
 exec "$@"
