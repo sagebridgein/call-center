@@ -1,30 +1,36 @@
-FROM python:3.9-slim-bullseye as builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    git
-
-COPY . /usr/src/wazo-confd
-WORKDIR /usr/src/wazo-confd
+FROM python:3.9-slim-bullseye AS compile-image
+LABEL maintainer="Wazo Maintainers <dev@wazo.community>"
 
 RUN python -m venv /opt/venv
+# Activate virtual env
 ENV PATH="/opt/venv/bin:$PATH"
 
+RUN apt-get -q update
+RUN apt-get -yq install --no-install-recommends build-essential libpq-dev git gcc
+
+COPY requirements.txt /usr/src/wazo-confd/requirements.txt
+WORKDIR /usr/src/wazo-confd
 RUN pip install -r requirements.txt
+
+COPY . /usr/src/wazo-confd
 RUN python setup.py install
 
-FROM python:3.9-slim-bullseye
+FROM python:3.9-slim-bullseye AS build-image
+COPY --from=compile-image /opt/venv /opt/venv
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
+COPY ./etc/wazo-confd /etc/wazo-confd
+RUN apt-get -q update \
+    && apt-get -yq install --no-install-recommends libpq5 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+RUN true \
+    && mkdir -p /etc/wazo-confd/conf.d \
+    && install -o www-data -g www-data /dev/null /var/log/wazo-confd.log \
+    && install -d -o www-data -g www-data /var/lib/asterisk/moh \
+    && install -dm775 -o www-data -g www-data /var/lib/wazo/sounds/tenants \
+    && install -dm777 /usr/share/asterisk/sounds
 
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /usr/src/wazo-confd /usr/src/wazo-confd
+EXPOSE 9486
 
+# Activate virtual env
 ENV PATH="/opt/venv/bin:$PATH"
-
-WORKDIR /usr/src/wazo-confd
-
 CMD ["wazo-confd", "-d"]

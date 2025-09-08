@@ -1,4 +1,34 @@
-FROM ajaysehwal81/wazo-websocketd
+FROM python:3.9-slim-bullseye AS compile-image
+LABEL maintainer="Wazo Maintainers <dev@wazo.community>"
 
+RUN python -m venv /opt/venv
+# Activate virtual env
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN apt-get update && apt-get install -y gcc
+
+COPY requirements.txt /usr/src/wazo-websocketd/
+WORKDIR /usr/src/wazo-websocketd
+RUN pip install -r requirements.txt
+
+COPY setup.py /usr/src/wazo-websocketd/
+COPY wazo_websocketd /usr/src/wazo-websocketd/wazo_websocketd
+RUN python setup.py install
+
+EXPOSE 9502
+
+FROM python:3.9-slim-bullseye AS build-image
+COPY --from=compile-image /opt/venv /opt/venv
+
+# Ensure the virtualenv is on PATH so installed entrypoints are runnable
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY ./etc/wazo-websocketd /etc/wazo-websocketd
 RUN true \
-    && apt-get update && apt-get install -y netcat
+  && adduser --quiet --system --group wazo-websocketd \
+  && mkdir -p /etc/wazo-websocketd/conf.d \
+  && install -o wazo-websocketd -g wazo-websocketd -d /run/wazo-websocketd \
+  && install -o wazo-websocketd -g wazo-websocketd /dev/null /var/log/wazo-websocketd.log
+
+# Default command: run the installed websocketd entrypoint from the venv
+CMD ["wazo-websocketd"]

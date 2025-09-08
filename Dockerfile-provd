@@ -1,9 +1,41 @@
-FROM ajaysehwal81/wazo-provd
+FROM python:3.9-slim-bullseye AS compile-image
+LABEL maintainer="Wazo Maintainers <dev@wazo.community>"
 
-RUN apt-get update && apt-get install -y python3 python3-venv netcat
-RUN python3 -m venv /opt/venv3
+RUN apt-get -q update
+RUN apt-get -yq install gcc
+RUN apt-get update && apt-get install -y libpq-dev gcc
+RUN python -m venv /opt/venv
 # Activate virtual env
-ENV PATH="/opt/venv3/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH"
 
-RUN pip3 install wheel
-RUN pip3 install https://github.com/wazo-platform/wazo-confgend-client/archive/master.zip
+# Install
+COPY requirements.txt /usr/src/wazo-provd/
+WORKDIR /usr/src/wazo-provd
+# incremental==24.7.0+ is downloaded automatically by twisted install
+# but this version is incompatible with setuptools 58.1 from python:3.9-slim-bullseye
+RUN pip install incremental==17.5.0
+RUN pip install -r requirements.txt
+
+COPY setup.py /usr/src/wazo-provd/
+COPY wazo_provd /usr/src/wazo-provd/wazo_provd
+COPY twisted /usr/src/wazo-provd/twisted
+# Install compatibility module for old plugins
+COPY provd /usr/src/wazo-provd/provd
+RUN python setup.py install
+
+FROM python:3.9-slim-bullseye AS build-image
+COPY --from=compile-image /opt/venv /opt/venv
+
+COPY ./etc/wazo-provd /etc/wazo-provd
+RUN mkdir -p /var/cache/wazo-provd
+
+EXPOSE 8667
+EXPOSE 8666
+EXPOSE 69/udp
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 && rm -rf /var/lib/apt/lists/*
+
+# Activate virtual env
+ENV PATH="/opt/venv/bin:$PATH"
+CMD ["twistd", "--nodaemon", "--no_save", "--pidfile=", "wazo-provd", "--stderr", "--verbose"]

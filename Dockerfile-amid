@@ -1,8 +1,26 @@
-FROM ajaysehwal81/wazo-amid
+FROM python:3.9-slim-bullseye AS compile-image
+LABEL maintainer="Wazo Maintainers <dev@wazo.community>"
 
-# Add AJAM server
-COPY bin/ajam-server.py /usr/local/bin/ajam-server.py
-RUN chmod +x /usr/local/bin/ajam-server.py
+RUN python -m venv /opt/venv
+# Activate virtual env
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Install Python if not already available
-RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
+COPY . /usr/src/wazo-amid
+WORKDIR /usr/src/wazo-amid
+COPY requirements.txt .
+RUN apt-get update && apt-get install -y libpq-dev gcc
+RUN pip install -r requirements.txt
+RUN python setup.py install
+
+FROM python:3.9-slim-bullseye AS build-image
+COPY --from=compile-image /opt/venv /opt/venv
+
+COPY ./etc/wazo-amid /etc/wazo-amid
+RUN true \
+    && adduser --quiet --system --group --no-create-home wazo-amid \
+    && install -o wazo-amid -g wazo-amid /dev/null /var/log/wazo-amid.log
+
+EXPOSE 9491
+
+ENV PATH="/opt/venv/bin:$PATH"
+CMD ["wazo-amid"]
