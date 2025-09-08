@@ -61,8 +61,16 @@ class AJAMHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 if __name__ == '__main__':
-    PORT = 5038  # Use a different port for AJAM
+    PORTS = [5040, 5041, 5042, 5043, 5044]  # Try multiple ports
     
-    with socketserver.TCPServer(("", PORT), AJAMHandler) as httpd:
-        print(f"AJAM server running on port {PORT}")
-        httpd.serve_forever()
+    for PORT in PORTS:
+        try:
+            httpd = socketserver.TCPServer(("", PORT), AJAMHandler)
+            print(f"AJAM server running on port {PORT}")
+            httpd.serve_forever()
+            break
+        except OSError as e:
+            if e.errno == 98:  # Address already in use
+                print(f"Port {PORT} is already in use, trying next port...")
+                continue
+            raise

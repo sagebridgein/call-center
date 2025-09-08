@@ -1,8 +1,14 @@
+# Docker Compose for the Wazo call-center stack.
+# Note: the `version` key is obsolete for modern docker compose and has
+# been removed to avoid the deprecation warning.
+
 services:
   nginx:
     image: nginx
     ports:
-      - "0.0.0.0:8443:443"
+      - "80:80"
+      - "443:443"
+      - "[::]:8080:80"
       - "[::]:8443:443"
     env_file:
       - variables.env
@@ -14,12 +20,10 @@ services:
       - ./etc/nginx.conf:/etc/nginx/conf.d/config.conf:ro
       - ./certs:/certs:ro
     depends_on: # Avoid to fail container if host doesn't exist
-      - agentd
       - amid
       - asterisk
       - auth
       - call-logd
-      - calld
       - chatd
       - confd
       - dird
@@ -31,10 +35,6 @@ services:
 
   postgres:
     image: postgres:13 # Must use compatible version than the odbc_postgresql installed in asterisk container
-    environment:
-      POSTGRES_DB: wazo
-      POSTGRES_USER: asterisk # reason: hardcoded in populate.sql
-      POSTGRES_PASSWORD: secret
     env_file:
       - variables.env
     volumes:
@@ -42,9 +42,36 @@ services:
       - ./init-db:/docker-entrypoint-initdb.d
     expose:
       - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asterisk -d wazo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db-migrator:
+    build:
+      context: ./docker/db-migrator
+  # db-migrator is a one-shot service that runs DB init and alembic
+  # migrations from the host-mounted `./repos` directory. It must be
+  # run before other services that expect DB schemas to exist.
+    environment:
+      - MIGRATOR_VENV_CACHE=/var/lib/db-migrator/venv_cache
+      - MIGRATOR_LOG_DIR=/var/log/db-migrator
+      - WAZO_DB_INIT_DB=true
+    env_file:
+      - variables.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./repos:/home/ubuntu:rw
+      - migrator-venv-cache:/var/lib/db-migrator/venv_cache:rw
+      - migrator-logs:/var/log/db-migrator:rw
+    networks:
+      - default
 
   rabbitmq:
-    image: rabbitmq
+    image: rabbitmq:latest
     env_file:
       - variables.env
     expose:
@@ -53,67 +80,62 @@ services:
       - tmp-rabbitmq:/var/lib/rabbitmq:rw
 
   auth:
-    image: ajaysehwal81/wazo-auth
+    build:
+      context: ./repos/wazo-auth
+    volumes:
+      - ./etc/wazo-auth.yml:/etc/wazo-auth/conf.d/01-docker.yml:ro
+    environment:
+      POSTGRES_DB: wazo
+      POSTGRES_USER: asterisk # reason: hardcoded in populate.sql
+      POSTGRES_PASSWORD: secret
     env_file:
       - variables.env
-    expose:
-      - 9497
-    volumes:
-      - ./etc/wazo-auth.yml:/etc/wazo-auth/conf.d/config.yml:ro
-      - type: bind
-        source: ./wazo-auth-keys/etc/wazo-auth/conf.d/50-wazo-default.yml
-        target: /etc/wazo-auth/conf.d/50-wazo-default.yml
-        read_only: true
+    depends_on:
+      - postgres
+    networks:
+      - default
+      - wazo
 
   confd:
     build:
-      context: .
-      dockerfile: Dockerfile-confd
+      context: ./repos/wazo-confd
+    environment:
+      - WAZO_DB_URI=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     env_file:
       - variables.env
-    expose:
-      - 9486
     volumes:
-      - ./etc/wazo-confd.yml:/etc/wazo-confd/conf.d/config.yml:ro
-      - ./etc/xivo-dao.yml:/etc/xivo-dao/conf.d/config.yml:ro
-      - ./bin/init-confd:/bin/wazo-confd/init:ro
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
+      - ./etc/wazo-confd.yml:/etc/wazo-confd/conf.d/01-docker.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-      - asterisk-autoprov:/etc/asterisk/pjsip.d:rw # write 05-autoprov-wizard.conf
-      - asterisk-doc:/var/lib/wazo-confd/asterisk-doc:ro
-    entrypoint: ["/bin/wazo-confd/init"]
-    command: ["wazo-confd"]
+    depends_on:
+      - auth
+      - rabbitmq
+      - bootstrap
+    networks:
+      - default
+      - wazo
+    tmpfs:
+      - /var/run/wazo-confd
 
   provd:
-    image: ajaysehwal81/wazo-provd
     build:
-      context: .
-      dockerfile: Dockerfile-provd
+      context: ./repos/wazo-provd
     env_file:
       - variables.env
-    expose:
-      - 8666
+    tty: true
     volumes:
-      - ./etc/wazo-confgend-client.conf:/etc/wazo-confgend-client/config.conf:ro
-      - ./etc/wazo-provd.yml:/etc/wazo-provd/conf.d/config.yml:ro
-      - ./bin/init-provd:/bin/wazo-provd/init:ro
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
+      - ./etc/wazo-provd.yml:/etc/wazo-provd/conf.d/01-docker.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-      - provd-data:/var/lib/wazo-provd:rw
-    entrypoint: ["/bin/wazo-provd/init"]
-    command:
-      [
-        "twistd",
-        "--nodaemon",
-        "--no_save",
-        "--pidfile=",
-        "wazo-provd",
-        "--stderr",
-        "--verbose",
-      ]
+    depends_on:
+      - rabbitmq
+      - auth
+      - confgend
+    networks:
+      - default
+      - wazo
 
   sysconfd:
-    image: ajaysehwal81/wazo-sysconfd
+    build:
+      context: ./repos/wazo-sysconfd
     env_file:
       - variables.env
     expose:
@@ -123,19 +145,13 @@ services:
 
   webhookd:
     build:
-      context: .
-      dockerfile: Dockerfile-webhookd
+      context: ./repos/wazo-webhookd
     env_file:
       - variables.env
-    expose:
-      - 9300
-    volumes:
-      - ./etc/wazo-webhookd.yml:/etc/wazo-webhookd/conf.d/config.yml:ro
-      - ./bin/init-webhookd:/bin/wazo-webhookd/init:ro
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-webhookd/init"]
-    command: ["wazo-webhookd"]
+    depends_on:
+      - rabbitmq
+    networks:
+      - default
 
   asterisk:
     build:
@@ -147,7 +163,7 @@ services:
       - variables.env
     expose:
       - "5038" # AMI
-      - "5039" # HTTP (ARI/AJAM)
+      - "5040-5044" # HTTP (ARI/AJAM)
     ports:
       - "5060:5060/udp" # SIP
       - "19980-20000:19980-20000/udp" # RTP
@@ -181,7 +197,8 @@ services:
     command: ["sh", "-c", "python3 /usr/local/bin/ajam-server.py & asterisk -fTvvv"]
 
   confgend:
-    image: ajaysehwal81/wazo-confgend
+    build:
+      context: ./repos/wazo-confgend
     env_file:
       - variables.env
     expose:
@@ -192,72 +209,70 @@ services:
 
   agid:
     build:
-      context: .
-      dockerfile: Dockerfile-agid
+      context: ./repos/wazo-agid
+    environment:
+      - WAZO_DB_URI=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     env_file:
       - variables.env
-    expose:
-      - 4573
+    depends_on:
+      - rabbitmq
+      - asterisk
+    networks:
+      - default
     volumes:
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - ./bin/init-agid:/bin/wazo-agid/init:ro
-      - ./etc/wazo-agid.yml:/etc/wazo-agid/conf.d/config.yml:ro
+      - ./etc/wazo-agid.yml:/etc/wazo-agid/conf.d/01-docker.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-      # xivo-config has too much dependencies to be installed in the container
-      - type: bind
-        source: ./xivo-config/etc/xivo
-        target: /etc/xivo
-        read_only: true
-    entrypoint: ["/bin/wazo-agid/init"]
-    command: ["wazo-agid"]
 
   dird:
     build:
       context: .
       dockerfile: Dockerfile-dird
+    environment:
+      - WAZO_DB_URI=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     env_file:
       - variables.env
-    expose:
-      - 9489
-    volumes:
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - ./bin/init-dird:/bin/wazo-dird/init:ro
-      - ./etc/wazo-dird.yml:/etc/wazo-dird/conf.d/config.yml:ro
-      - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-dird/init"]
-    command: ["wazo-dird"]
+    depends_on:
+      - rabbitmq
+    networks:
+      - default
 
   amid:
     build:
-      context: .
-      dockerfile: Dockerfile-amid
+      context: ./repos/wazo-amid
     env_file:
       - variables.env
-    expose:
-      - 9491
     volumes:
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - ./bin/init-amid:/bin/wazo-amid/init:ro
-      - ./etc/wazo-amid.yml:/etc/wazo-amid/conf.d/config.yml:ro
+      - ./etc/wazo-amid.yml:/etc/wazo-amid/conf.d/01-docker.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-amid/init"]
-    command: ["wazo-amid"]
+    depends_on:
+      - rabbitmq
+      - asterisk
+      - bootstrap
+    networks:
+      - default
 
   call-logd:
     build:
-      context: .
-      dockerfile: Dockerfile-call-logd
+      context: ./repos/wazo-call-logd
+    environment:
+      - WAZO_DB_URI=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     env_file:
       - variables.env
-    expose:
-      - 9298
+    depends_on:
+      - rabbitmq
+    networks:
+      - default
     volumes:
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - ./bin/init-call-logd:/bin/wazo-call-logd/init:ro
-      - ./etc/wazo-call-logd.yml:/etc/wazo-call-logd/conf.d/config.yml:ro
+      - ./etc/wazo-call-logd.yml:/etc/wazo-call-logd/config.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-call-logd/init"]
-    command: ["wazo-call-logd", "--db-upgrade-on-startup"]
+    healthcheck:
+      # Robust healthcheck: try an HTTP status (accept 200 or 204), then
+      # fallback to a TCP socket probe if HTTP fails.
+      test: ["CMD-SHELL", ">-", "python3 - <<'PY'\nimport sys, urllib.request, socket\ntry:\n r = urllib.request.urlopen('http://127.0.0.1:9298/1.0/status', timeout=2)\n if getattr(r, 'status', None) in (200, 204):\n     sys.exit(0)\nexcept Exception:\n pass\ntry:\n socket.create_connection(('127.0.0.1', 9298), 2)\n sys.exit(0)\nexcept Exception:\n sys.exit(1)\nPY"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   chatd:
     build:
@@ -265,80 +280,40 @@ services:
       dockerfile: Dockerfile-chatd
     env_file:
       - variables.env
-    expose:
-      - 9304
+    depends_on:
+      - rabbitmq
+    networks:
+      - default
     volumes:
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - ./bin/init-chatd:/bin/wazo-chatd/init:ro
+      - ./etc/wazo-chatd.yml:/etc/wazo-chatd/config.yml:ro
       - ./etc/wazo-chatd.yml:/etc/wazo-chatd/conf.d/config.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-chatd/init"]
-    command: ["wazo-chatd"]
 
   phoned:
-    image: ajaysehwal81/wazo-phoned
+    build:
+      context: ./repos/wazo-phoned
     env_file:
       - variables.env
-    expose:
-      - 9304
+    depends_on:
+      - rabbitmq
+    networks:
+      - default
     volumes:
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - ./bin/init-phoned:/bin/wazo-phoned/init:ro
       - ./etc/wazo-phoned.yml:/etc/wazo-phoned/conf.d/config.yml:ro
       - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-phoned/init"]
-    command: ["wazo-phoned"]
 
   websocketd:
-    image: ajaysehwal81/wazo-websocketd
     build:
-      context: .
-      dockerfile: Dockerfile-websocketd
+      context: ./repos/wazo-websocketd
     env_file:
       - variables.env
-    expose:
-      - 9502
-    volumes:
-      - ./etc/wazo-websocketd.yml:/etc/wazo-websocketd/conf.d/config.yml:ro
-      - ./bin/init-websocketd:/bin/wazo-websocketd/init:ro
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-websocketd/init"]
-    command: ["wazo-websocketd"]
-
-  calld:
-    image: ajaysehwal81/wazo-calld
-    env_file:
-      - variables.env
-    expose:
-      - 9491
-    volumes:
-      - asterisk-voicemail:/var/spool/asterisk/voicemail:rw
-      - ./etc/wazo-calld.yml:/etc/wazo-calld/conf.d/config.yml:ro
-      - ./bin/init-calld:/bin/wazo-calld/init:ro
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-calld/init"]
-    command: ["wazo-calld"]
-
-  agentd:
-    build:
-      context: .
-      dockerfile: Dockerfile-agentd
-    env_file:
-      - variables.env
-    expose:
-      - 9493
-    volumes:
-      - ./etc/wazo-agentd.yml:/etc/wazo-agentd/conf.d/config.yml:ro
-      - ./bin/init-agentd:/bin/wazo-agentd/init:ro
-      - ./bin/init-helpers:/var/lib/wazo/helpers:ro
-      - wazo-auth-keys:/var/lib/wazo-auth-keys:ro
-    entrypoint: ["/bin/wazo-agentd/init"]
-    command: ["wazo-agentd"]
-
+    depends_on:
+      - rabbitmq
+    networks:
+      - default
   ui:
-    image: ajaysehwal81/wazo-ui
+    build:
+      context: ./repos/wazo-ui
     env_file:
       - variables.env
     expose:
@@ -352,6 +327,15 @@ services:
     env_file:
       - variables.env
     restart: unless-stopped
+    environment:
+      - TOKEN
+    depends_on:
+      - auth
+      - sysconfd
+      - dird
+      - webhookd
+      - rabbitmq
+      - confgend
     volumes:
       - ./bin/init-bootstrap:/bin/platform-bootstrap/init:ro
       - ./etc/wazo-auth-cli.yml:/etc/wazo-auth-cli/conf.d/config.yml:ro
@@ -362,13 +346,6 @@ services:
         read_only: true
     entrypoint:
       - /bin/platform-bootstrap/init
-    depends_on:
-      - auth
-      - confd
-      - provd
-      - sysconfd
-      - dird
-      - webhookd
 
 volumes:
   pgdata:
@@ -378,3 +355,9 @@ volumes:
   asterisk-doc:
   asterisk-voicemail:
   tmp-rabbitmq: # Compatibility for non-Linux systems
+  migrator-venv-cache:
+  migrator-logs:
+
+networks:
+  default:
+  wazo:

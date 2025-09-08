@@ -1,23 +1,30 @@
-FROM ajaysehwal81/wazo-confd
+FROM python:3.9-slim-bullseye as builder
 
-RUN true \
-    && apt-get update && apt-get install -y \
-      postgresql-client \
-      postgresql-server-dev-all \
-      libpq-dev \
-      netcat \
-      wget \
-      gcc \
-      python3-dev \
-    && pip install \
-      alembic==1.0.0 \
-      https://github.com/wazo-platform/wazo-uuid/archive/master.zip \
-      https://github.com/wazo-platform/xivo-manage-db/archive/master.zip \
-      https://github.com/wazo-platform/wazo-asterisk-doc-extractor/archive/master.zip \
-    && adduser --quiet --system --group --shell /bin/bash postgres \
-    && mkdir -p /var/lib/wazo-confd \
-    && mkdir -p /usr/lib/xivo-manage-db \
-    && rm -f /usr/lib/xivo-manage-db/pg-populate-db && ln -s /opt/venv/bin/pg-populate-db /usr/lib/xivo-manage-db/pg-populate-db \
-    && wget -q -O- https://github.com/wazo-platform/xivo-manage-db/archive/master.tar.gz | tar -xz -C /usr/share --transform s/-master// \
-    && apt-get clean \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    git
+
+COPY . /usr/src/wazo-confd
+WORKDIR /usr/src/wazo-confd
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install -r requirements.txt
+RUN python setup.py install
+
+FROM python:3.9-slim-bullseye
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /usr/src/wazo-confd /usr/src/wazo-confd
+
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /usr/src/wazo-confd
+
+CMD ["wazo-confd", "-d"]

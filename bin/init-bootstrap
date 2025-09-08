@@ -19,34 +19,82 @@ wait_for_wazo_auth
 echo Generating or updating service users...
 wazo-auth-keys service update
 
-echo Waiting for wazo-confd...
-python - <<EOF
-import requests, time
-url = 'http://confd:9486/1.1/infos'
-retry = $container_timeout
-delay = 1
-for n in range(retry):
-    try:
-        r = requests.get(url)
-    except requests.exceptions.RequestException:
-        if n < retry - 1:
-            time.sleep(delay)
-            continue
-        else:
-            raise
-    print(f'Response: {r}')
-    break
-EOF
+# Run DB initialization (extensions / small SQL) from bootstrap so other
+# services can rely on the database schema being present. Prefer using
+# psql if available, otherwise try python + psycopg2. Uses POSTGRES_* env
+# vars or sensible defaults.
+function run_db_init() {
+    DB_HOST=${DB_HOST:-postgres}
+    DB_USER=${POSTGRES_USER:-asterisk}
+    DB_PASS=${POSTGRES_PASSWORD:-secret}
+    DB_NAME=${POSTGRES_DB:-wazo}
+    RETRIES=${DB_INIT_RETRIES:-30}
+    DELAY=${DB_INIT_DELAY:-1}
+
+    SQL_COMMANDS='CREATE EXTENSION IF NOT EXISTS "uuid-ossp";\nCREATE EXTENSION IF NOT EXISTS "pgcrypto";\nCREATE EXTENSION IF NOT EXISTS "unaccent";\nCREATE EXTENSION IF NOT EXISTS "hstore";'
+
+    echo "Trying to initialize DB (extensions) on ${DB_HOST} as ${DB_USER}/${DB_NAME} ..."
+
+    for i in $(seq 1 $RETRIES); do
+        if command -v psql >/dev/null 2>&1; then
+            echo "psql detected, running SQL commands (attempt $i)..."
+            PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -c "$SQL_COMMANDS" && {
+                echo "DB init succeeded"
+                return 0
+            } || echo "psql attempt $i failed"
+        elif python -c "import psycopg2" >/dev/null 2>&1; then
+            echo "psycopg2 available, running SQL via python (attempt $i)..."
+            python - <<PY || echo "python attempt $i failed"
+import os, sys
+import psycopg2
+conn = psycopg2.connect(dbname=os.getenv('POSTGRES_DB','wazo'), user=os.getenv('POSTGRES_USER','asterisk'), password=os.getenv('POSTGRES_PASSWORD','secret'), host=os.getenv('DB_HOST','postgres'))
+cur = conn.cursor()
+for stmt in [
+        'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";',
+        'CREATE EXTENSION IF NOT EXISTS "pgcrypto";',
+        'CREATE EXTENSION IF NOT EXISTS "unaccent";',
+        'CREATE EXTENSION IF NOT EXISTS "hstore";'
+]:
+        cur.execute(stmt)
+conn.commit()
+cur.close()
+conn.close()
+print('DB init succeeded')
+PY
+            if [ $? -eq 0 ]; then
+                return 0
+            fi
+        else
+            echo "No psql or psycopg2 available in this container; will retry (attempt $i)"
+        fi
+
+        sleep $DELAY
+    done
+
+    echo "DB init failed after $RETRIES attempts; continuing but some services may fail until DB is ready"
+    return 1
+}
+
+# Run DB init early so confd/provd won't fail on first requests due to missing extensions/tables
+run_db_init || true
+
+# Create a token to authenticate bootstrap requests to services that require it
+TOKEN=$(wazo-auth-cli token create || true)
+export TOKEN
+
+
 
 echo Waiting for wazo-provd...
 python - <<EOF
-import requests, time
+import requests, time, os
+token = os.environ.get('TOKEN')
+headers = {'X-Auth-Token': token} if token else {}
 url = 'http://provd:8666/0.2/status'
 retry = $container_timeout
 delay = 1
 for n in range(retry):
     try:
-        r = requests.get(url)
+        r = requests.get(url, headers=headers)
     except requests.exceptions.RequestException:
         if n < retry - 1:
             time.sleep(delay)
@@ -59,13 +107,15 @@ EOF
 
 echo Waiting for wazo-sysconfd...
 python - <<EOF
-import requests, time
+import requests, time, os
+token = os.environ.get('TOKEN')
+headers = {'X-Auth-Token': token} if token else {}
 url = 'http://sysconfd:8668/status-check'
 retry = $container_timeout
 delay = 1
 for n in range(retry):
     try:
-        r = requests.get(url)
+        r = requests.get(url, headers=headers)
     except requests.exceptions.RequestException:
         if n < retry - 1:
             time.sleep(delay)
@@ -79,13 +129,15 @@ EOF
 # To create default directory sources when tenant will be created
 echo Waiting for wazo-dird...
 python - <<EOF
-import requests, time
+import requests, time, os
+token = os.environ.get('TOKEN')
+headers = {'X-Auth-Token': token} if token else {}
 url = 'http://dird:9489/0.1/status'
 retry = $container_timeout
 delay = 1
 for n in range(retry):
     try:
-        r = requests.get(url)
+        r = requests.get(url, headers=headers)
     except requests.exceptions.RequestException:
         if n < retry - 1:
             time.sleep(delay)

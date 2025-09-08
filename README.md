@@ -98,3 +98,54 @@ during development:
 - Container images embed the `netcat` tool that can be used to open a remote
   shell.
 - Credentials are hardcoded
+
+---
+
+## db-migrator (one-shot migrations)
+
+This repository includes a `db-migrator` helper image under `docker/db-migrator`.
+Its role is to run database initialization and Alembic migrations for the
+local repositories mounted under `./repos` before starting services that rely
+on the database schema.
+
+How it works (short):
+- Mounts `./repos` into the container at `/home/ubuntu`.
+- Waits for Postgres to be reachable.
+- Runs `xivo_dao.init_db()` to ensure core DAO tables.
+- Discovers `alembic.ini` files under `/home/ubuntu` and, for each repo:
+  - Creates a temporary venv, installs the repo's `requirements.txt` (or
+    installs `alembic`), sets `PYTHONPATH` to the repo root and runs
+    `alembic -c <cfg> upgrade head` from the repo root.
+
+Run it manually:
+
+```bash
+docker compose -f docker-compose.yml up -d --no-deps --force-recreate --build db-migrator
+docker compose -f docker-compose.yml logs --no-log-prefix --tail=400 db-migrator
+```
+
+Per-repo logs are written to `migrator_logs/` under the working directory of
+the migrator process (this directory is created by the migrator when it runs).
+
+If a repo's migrations fail, inspect `migrator_logs/<repo>.log` for details.
+
+Note about runtime images and virtualenvs
+----------------------------------------
+
+Some service Dockerfiles build and copy a virtualenv from a build stage
+into the runtime stage (for example `/opt/venv`). That virtualenv contains
+the installed Python interpreter and console entrypoints (the `wazo-*`
+executables). If the runtime image does not include a compatible Python
+base (for example when using `debian:11-slim`), the copied virtualenv's
+binaries won't run: you'll see errors like "/opt/venv/bin/wazo-call-logd:
+no such file or directory". To preserve a working virtualenv you must either:
+
+- use a runtime base that provides the same Python ABI (e.g. `python:3.9-slim`),
+  or
+- avoid copying a venv and instead install the package into the runtime
+  system Python (pip install into the image).
+
+We chose to make runtime images keep Python (via `python:<version>` base)
+because it keeps the multi-stage build fast and reproduces the upstream
+packaging assumptions.
+

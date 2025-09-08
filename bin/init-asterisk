@@ -77,4 +77,18 @@ if [ -f "$DEFAULT_PJSIP_CONF" ]; then
 	fi
 fi
 
-exec "$@"
+# Start Asterisk first
+asterisk -f &
+ASTERISK_PID=$!
+
+# Wait for Asterisk to start listening on port 5038
+while ! nc -z localhost 5038; do
+  sleep 1
+done
+
+# Then start AJAM server
+python3 /usr/local/bin/ajam-server.py &
+AJAM_PID=$!
+
+# Wait for either process to exit
+wait -n $ASTERISK_PID $AJAM_PID

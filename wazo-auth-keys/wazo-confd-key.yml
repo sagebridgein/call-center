@@ -1,0 +1,2 @@
+service_id: wazo-confd
+service_key: a-very-secret-and-random-token-for-auth
