@@ -2,8 +2,8 @@ services:
   nginx:
     image: nginx
     ports:
-      - "0.0.0.0:8443:443"
-      - "[::]:8443:443"
+      - "127.0.0.1:8443:443"
+      - "[::1]:8443:443"
     env_file:
       - variables.env
     volumes:
@@ -56,10 +56,8 @@ services:
     image: ajaysehwal81/wazo-auth
     env_file:
       - variables.env
-    # expose:
-    #   - 9497
-    ports:                     # <-- change here
-    - "9497:9497" 
+    expose:
+      - 9497
     volumes:
       - ./etc/wazo-auth.yml:/etc/wazo-auth/conf.d/config.yml:ro
       - type: bind
@@ -73,10 +71,8 @@ services:
       dockerfile: Dockerfile-confd
     env_file:
       - variables.env
-    # expose:
-    #   - 9486
-    ports:
-      - "9486:9486"
+    expose:
+      - 9486
     volumes:
       - ./etc/wazo-confd.yml:/etc/wazo-confd/conf.d/config.yml:ro
       - ./etc/xivo-dao.yml:/etc/xivo-dao/conf.d/config.yml:ro
@@ -155,7 +151,6 @@ services:
     ports:
       - "5060:5060/udp" # SIP
       - "19980-20000:19980-20000/udp" # RTP
-      - "10000-20000:10000-20000/udp"   # RTP ports for audio
     volumes:
       - ./bin/init-helpers:/var/lib/wazo/helpers:ro
       - ./etc/wazo-confgend-client.conf:/etc/wazo-confgend-client/config.conf:ro
@@ -171,9 +166,7 @@ services:
       - asterisk-autoprov:/etc/asterisk/pjsip.d:rw
       - asterisk-doc:/usr/share/asterisk/documentation:rw
       - asterisk-voicemail:/var/spool/asterisk/voicemail:rw
-      - ./etc/asterisk-pjsip.conf:/etc/asterisk/pjsip.conf:ro
-      - ./etc/asterisk-pjsip-00-transport.conf:/etc/asterisk/pjsip.d/00-transport.conf:ro
-      # xivo-config has too much dependencies to be installed in the containr
+      # xivo-config has too much dependencies to be installed in the container
       - type: bind
         source: ./xivo-config/etc/xivo/asterisk
         target: /etc/xivo/asterisk
@@ -186,7 +179,7 @@ services:
     command: ["sh", "-c", "python3 /usr/local/bin/ajam-server.py & asterisk -fTvvv"]
 
   confgend:
-    image: ajaysehwal81/wazo-confgend
+    image: wazoplatform/wazo-confgend
     env_file:
       - variables.env
     expose:
@@ -356,8 +349,6 @@ services:
       dockerfile: Dockerfile-bootstrap
     env_file:
       - variables.env
-    restart: unless-stopped
-
     volumes:
       - ./bin/init-bootstrap:/bin/platform-bootstrap/init:ro
       - ./etc/wazo-auth-cli.yml:/etc/wazo-auth-cli/conf.d/config.yml:ro
@@ -375,7 +366,6 @@ services:
       - sysconfd
       - dird
       - webhookd
-      
 
 volumes:
   pgdata:

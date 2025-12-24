@@ -9,7 +9,7 @@ ami:
 
 ajam:
   host: asterisk
-  port: 5038
+  port: 5039
   username: wazo_amid
   password: eeCho8ied3u
 
